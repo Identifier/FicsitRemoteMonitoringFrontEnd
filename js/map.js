@@ -1,7 +1,25 @@
 // The world map used by every tab: the in-game map image, pan/zoom, toggleable layers, hover tooltips,
 // "locate" (fly to a point and pulse it) and the X/Y cursor readout. Point layers are drawn here; a tab can draw
-// anything else (vehicle paths, rails, moving markers) through the draw() hook. Uses the page's WORLD/IMG/worldToImg/mapImg.
+// anything else (vehicle paths, rails, moving markers) through the draw() hook. Uses the page's WORLD/IMG/worldToImg.
 "use strict";
+
+const MAP_TILE_URL = "/map-tiles";
+const MAP_TILE_CACHE = new Map();
+
+function mapTile(z, x, y) {
+  const url = `${MAP_TILE_URL}/${z}/${y}/${x}.webp`;
+  let image = MAP_TILE_CACHE.get(url);
+  if (!image) {
+    image = new Image();
+    image.onload = () => { for (const map of MapView.all) map.draw(); };
+    image.onerror = () => console.error(`Could not load map tile: ${url}`);
+    image.src = url;
+  }
+  MAP_TILE_CACHE.delete(url);
+  MAP_TILE_CACHE.set(url, image);
+  if (MAP_TILE_CACHE.size > 256) MAP_TILE_CACHE.delete(MAP_TILE_CACHE.keys().next().value);
+  return image;
+}
 
 // ---- hover popups: one look on every map -----------------------------------------------------------
 // A title (name + short ID), a sub line with a coloured status pill, then labelled rows in sections. Every marker's
@@ -793,7 +811,6 @@ class MapView {
     this.canvas.addEventListener("mouseleave", () => {
       if (this.hoverNet) { this.hoverNet = null; opts.onNetHover && opts.onNetHover(null); }
       this.mouseWorld = null; this.draw(); if (this.hoverId) { this.hoverId = null; opts.onHover && opts.onHover(null); this.draw(); } hideCargoPop(); });
-    mapImg.addEventListener("load", () => this.draw());
     this.renderButtons();
     for (const src of SOURCES) src.attach(this);
     if (opts.animate) {   // repaint while something moves (capped at ~30 fps), never while the map isn't on screen
@@ -1146,14 +1163,23 @@ class MapView {
     const ctx = this.ctx, r = this.canvas.getBoundingClientRect(), v = this.view;
     if (!r.width) return;
     ctx.clearRect(0, 0, r.width, r.height);
-    if (mapImg.complete && mapImg.naturalWidth) {
+    const sx = Math.max(0, -v.ox / v.s), sy = Math.max(0, -v.oy / v.s);
+    const sw = Math.min(IMG - sx, r.width / v.s - Math.max(0, v.ox / v.s)), sh = Math.min(IMG - sy, r.height / v.s - Math.max(0, v.oy / v.s));
+    if (sw > 0 && sh > 0) {
       ctx.imageSmoothingEnabled = v.s < 1;
-      // only the part of the map image that's on screen: drawing all 8192 px scaled up fails (blank) when zoomed in
-      const sx = Math.max(0, -v.ox / v.s), sy = Math.max(0, -v.oy / v.s);
-      const sw = Math.min(IMG - sx, r.width / v.s - Math.max(0, v.ox / v.s)), sh = Math.min(IMG - sy, r.height / v.s - Math.max(0, v.oy / v.s));
-      if (sw > 0 && sh > 0) ctx.drawImage(mapImg, sx, sy, sw, sh, v.ox + sx * v.s, v.oy + sy * v.s, sw * v.s, sh * v.s);
-      ctx.fillStyle = `rgba(10,12,16,${this.opts.dim ?? 0.45})`; ctx.fillRect(0, 0, r.width, r.height);
+      const z = Math.max(1, Math.min(5, Math.round(Math.log2(32 * v.s))));
+      const count = 2 ** z, tileUnits = IMG / count;
+      const x0 = Math.floor(sx / tileUnits), y0 = Math.floor(sy / tileUnits);
+      const x1 = Math.min(count - 1, Math.floor((sx + sw) / tileUnits));
+      const y1 = Math.min(count - 1, Math.floor((sy + sh) / tileUnits));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const image = mapTile(z, x, y);
+        if (image.complete && image.naturalWidth) {
+          ctx.drawImage(image, v.ox + x * tileUnits * v.s, v.oy + y * tileUnits * v.s, tileUnits * v.s, tileUnits * v.s);
+        }
+      }
     }
+    ctx.fillStyle = `rgba(10,12,16,${this.opts.dim ?? 0.45})`; ctx.fillRect(0, 0, r.width, r.height);
     const under = () => {   // lines and the tab's own drawing, under the markers
       if (this.opts.powerNet) { ctx.save(); drawPowerLines(this, this.opts.powerNet); ctx.restore(); }
       if (this.opts.logistics) { ctx.save(); drawLogistics(this, this.opts.logistics, this.opts.highlight?.(), this.hoverNet); ctx.restore(); }   // under everything else

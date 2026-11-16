@@ -29,11 +29,11 @@ Pick one:
 Both can update themselves later from the page (see [Updating](#updating)).
 
 ### 4. Fetch the map and pictures (once)
-The map image, vehicle pictures and icons are Coffee Stain's game art, so they aren't included. Open a terminal in the monitor's folder (in Explorer: right-click the folder → **Open in Terminal**) and run:
+The vehicle pictures and icons are Coffee Stain's game art, and the map background is from Satisfactory Interactive Map, so they aren't included. Open a terminal in the monitor's folder (in Explorer: right-click the folder → **Open in Terminal**) and run:
 ```sh
-python tools/fetch_assets.py --game-dir "<Satisfactory install folder>"
+python tools/fetch_assets.py
 ```
-`--game-dir` is a Satisfactory or SatisfactoryDedicatedServer folder **with FRM installed** (the map image comes from FRM's files). For Steam: right-click Satisfactory → **Manage** → **Browse local files**, and copy that path. The pictures and icons come from the [Satisfactory wiki](https://satisfactory.wiki.gg), so this step needs internet.
+This downloads the map tiles from [Satisfactory Interactive Map](https://satisfactoryinteractivemap.com/) and the pictures and icons from the [Satisfactory wiki](https://satisfactory.wiki.gg), so this step needs internet.
 
 ### 5. Run it
 ```sh
@@ -55,14 +55,14 @@ To start it with Windows, make a shortcut in the Startup folder (Win+R → `shel
 
 ### Troubleshooting
 - **"offline: FRM not answering"**: FRM's web server isn't running, or isn't at the address the monitor uses. Check step 1, and `--frm` if FRM runs on another machine. While the game server is down, the dashboard shows the last state it saw ("offline since …").
-- **No map background**: run step 4 (look for `map.avif` in the monitor's folder).
+- **No map background**: run step 4 and check that the `map-tiles` folder contains downloaded tiles.
 - **`python` isn't recognised**: Python isn't on PATH. Reinstall it with **Add python.exe to PATH** ticked, or use `py server.py`.
 - **Port 8090 already in use**: another copy is already running, or use `--port 8091`.
 
 ## Updating
 `server.py` checks this repo's [releases](https://github.com/KingOfPoptart/FicsitRemoteMonitoringFrontEnd/releases) a few seconds after it starts and then every 6 hours. When there's a newer one, an **Update to vX** button shows next to Reset layout (hover it for what's new). Click it on the computer running the monitor: it installs the release, restarts itself (a few seconds) and the page reloads. Pages opened from other devices show that a release is out but can't install it. With `--auto-update` it installs releases without asking; open pages then offer a reload.
 - A `git clone` updates with `git pull`-style fast-forward to the release tag. It's left alone (the button says why) when it has uncommitted changes, commits of its own, or is on a branch other than `main`.
-- A copy downloaded as a zip downloads the release zip and copies it over the folder. Files the repo doesn't ship (`history.json`, `laststate.json.gz`, `map.avif`, `img/`) are never touched.
+- A copy downloaded as a zip downloads the release zip and copies it over the folder. Files the repo doesn't ship (`history.json`, `laststate.json.gz`, `map-tiles/`, `img/`) are never touched.
 - If the new version doesn't start, the update is undone and the old one keeps running; the button says "Update failed" with the reason.
 - If GitHub can't be reached, the check only prints a line in the server window and tries again in an hour. The dashboard isn't affected.
 - Only published releases count; drafts, pre-releases and commits pushed without a release are never offered.
@@ -153,7 +153,7 @@ Every tab's map shares the same parts: a Layers dropdown with **everything** —
 - `server.py` records power (battery charge and capacity included), production and sink points history (every 5 s / 15 s, 24 hours kept, saved to `history.json`), so charts have data from before the page was opened. It works out the belt and pipe networks every minute while a page shows them (every 5 minutes for a page in the background, not at all when nobody is looking).
 
 ## Notes
-- The map image, vehicle pictures and icons aren't included because they're Coffee Stain's game art. `fetch_assets.py` gets them on your own machine.
+- The map image, vehicle pictures and icons aren't included because they're other people's game art. `fetch_assets.py` gets them on your own machine.
 - `server.py` serves the page and passes API calls through to FRM, so the browser never has to deal with cross-origin (CORS) restrictions.
 - **When the game server goes down** (shut down, restarting, a save loading), the dashboard keeps showing the last state it reported, and the header says "offline since …" with a red light instead of "live" (the light flashes red as the server goes down and green when it comes back). The Overview lists it first under Needs attention; click that to flash the light. `server.py` keeps FRM's last answer to every request and saves them to `laststate.json.gz` every few minutes and the moment FRM stops answering, so this also works after `server.py` itself restarts. It goes live again by itself once the server is back. History charts show a gap for the time it was down.
 - **Load on the game server**: FRM answers most calls on the game thread, so the dashboard tries to ask little:

@@ -699,7 +699,7 @@
 "use strict";
 // ---- config ---------------------------------------------------------------
 const POLL_MS = 1000;
-// World bounds of the 8192x8192 in-game map image, same as FRM's own map (Unreal cm).
+// World bounds of the map coordinate space used by the interactive-map tiles (Unreal cm).
 const WORLD = { x0: -324698.16796875, y0: -375000, x1: 425301.83203125, y1: 375000 };
 const IMG = 8192;
 
@@ -1416,7 +1416,6 @@ function droneLinks() {
 function renderLayerButtons() { vmap.renderButtons(); }
 
 // ---- map ------------------------------------------------------------------------
-const mapImg = new Image(); mapImg.src = "/map.avif";
 // the shared map component (js/map.js) does pan/zoom/layers/coordinates; this tab adds its drawing via draw()
 // vehicles drawn on the map: the table's filters, minus vehicle types switched off in the map's Layers dropdown
 const onMap = () => visible().filter(v => layers["v:" + v.type]);
