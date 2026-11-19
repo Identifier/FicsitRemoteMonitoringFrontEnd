@@ -383,10 +383,12 @@ class History:
         with self.lock:
             self.prod.append([round(time.time()), {k: [round(p, 3), round(c, 3)] for k, (p, c) in totals.items()},
                               {k: round(v, 2) for k, v in gen.items()}])
+            self.trim()
 
     def add_sink(self, total, dna):
         with self.lock:
             self.sink.append([round(time.time()), total, dna])
+            self.trim()
 
     def add_extractors(self, extractors):
         now, cut = round(time.time()), time.time() - 3600
@@ -1257,6 +1259,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 
+class BoundedThreadingHTTPServer(http.server.ThreadingHTTPServer):
+    request_queue_size = 128
+    allow_reuse_address = os.name != "nt"
+    max_workers = 16
+
+    def __init__(self, *args, **kwargs):
+        self._worker_slots = threading.BoundedSemaphore(self.max_workers)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        self._worker_slots.acquire()
+        try:
+            worker = threading.Thread(target=self.process_request_thread, args=(request, client_address))
+            worker.daemon = self.daemon_threads
+            worker.start()
+        except Exception:
+            self._worker_slots.release()
+            self.handle_error(request, client_address)
+            self.shutdown_request(request)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=8090)
@@ -1295,16 +1324,11 @@ if __name__ == "__main__":
     except Exception:
         version = "(version unknown)"
     print(f"FICSIT monitor {version} on http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{args.port}  (FRM: {FRM})")
-    # a page opening a tab fires a burst of requests at once: queue them instead of refusing (the default backlog is 5)
-    http.server.ThreadingHTTPServer.request_queue_size = 128
-    # On Windows SO_REUSEADDR lets a second copy listen on a port that's already in use (requests then go to either one
-    # at random): without it, a second copy fails with "port in use" instead.
-    http.server.ThreadingHTTPServer.allow_reuse_address = os.name != "nt"
     while True:
         # started by an update, or serving again after one was undone: the old server may still be letting go of the port
         for tries in range(60 if updater.RESTARTED or updater.RESUME.is_set() else 1, 0, -1):
             try:
-                httpd = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
+                httpd = BoundedThreadingHTTPServer((args.host, args.port), Handler)
                 break
             except OSError:
                 if tries == 1:
