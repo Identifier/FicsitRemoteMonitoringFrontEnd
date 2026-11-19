@@ -93,11 +93,18 @@ def last_save():
     with _last_lock:
         if not _net["dirty"]:
             return
-        data = {ep: [t, body.decode("utf-8", "replace")] for ep, (t, body) in _last.items()}
+        data = tuple((ep, t, body) for ep, (t, body) in _last.items())
         _net["dirty"] = False
     tmp = LAST_FILE.with_suffix(".tmp")
     with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=5) as f:
-        json.dump(data, f, separators=(",", ":"))
+        f.write("{")
+        for i, (ep, t, body) in enumerate(data):
+            if i:
+                f.write(",")
+            json.dump(ep, f)
+            f.write(":")
+            json.dump([t, body.decode("utf-8", "replace")], f, separators=(",", ":"))
+        f.write("}")
     os.replace(tmp, LAST_FILE)
 
 
@@ -328,9 +335,10 @@ class History:
 
     def save(self):
         with self.lock:
-            data = json.dumps({"session": self.session, "power": self.power, "prod": self.prod, "sink": self.sink}, separators=(",", ":"))
+            data = {"session": self.session, "power": self.power.copy(), "prod": self.prod.copy(), "sink": self.sink.copy()}
         tmp = HISTORY_FILE.with_suffix(".tmp")
-        tmp.write_text(data, encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f, separators=(",", ":"))
         os.replace(tmp, HISTORY_FILE)
 
     def trim(self):
