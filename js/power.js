@@ -239,7 +239,7 @@ const Power = (() => {
   }
   // anything else that uses power
   const usePop = u => { const pi = u.PowerInfo || {}, on = pi.PowerConsumed > 0.11;
-    return Pop.head(u.Name, { id: shortId(u.ID), sub: "uses power", status: pi.FuseTriggered ? "Fuse tripped" : pi.CircuitID < 0 ? "No grid" : on ? "Drawing power" : "Idle",
+    return Pop.head(u.Name, { id: shortId(u.ID), sub: u.PlayerName ? esc(u.PlayerName) : "uses power", status: pi.FuseTriggered ? "Fuse tripped" : pi.CircuitID < 0 ? "No grid" : on ? "Drawing power" : "Idle",
                               color: pi.FuseTriggered || pi.CircuitID < 0 ? "var(--bad)" : on ? POWER_COLOR : "var(--muted)" }) + Pop.powerWhy(pi) +
       Pop.sec("Power") + Pop.row("Drawing", Pop.mw(pi.PowerConsumed || 0, pi.MaxPowerConsumed)) + Pop.grid(pi.CircuitID) + Pop.where(u.location); };
 
@@ -395,8 +395,10 @@ const Power = (() => {
     const byB = new Map();
     for (const u of usage) {
       if (!onGrid(u.PowerInfo, g) || !(u.PowerInfo.MaxPowerConsumed > 0)) continue;
-      const b = byB.get(u.Name) || { name: u.Name, n: 0, cur: 0, max: 0 };
-      b.n++; b.cur += u.PowerInfo.PowerConsumed || 0; b.max += u.PowerInfo.MaxPowerConsumed || 0; byB.set(u.Name, b);
+      const b = byB.get(u.Name) || { name: u.Name, n: 0, cur: 0, max: 0, players: new Set() };
+      b.n++; b.cur += u.PowerInfo.PowerConsumed || 0; b.max += u.PowerInfo.MaxPowerConsumed || 0;
+      if (u.PlayerName) b.players.add(u.PlayerName);
+      byB.set(u.Name, b);
     }
     let rows = [...byB.values()].sort((a, b) => b.cur - a.cur || b.max - a.max);
     if (rows.length > 11) {
@@ -405,7 +407,7 @@ const Power = (() => {
         cur: rest.reduce((a, r) => a + r.cur, 0), max: rest.reduce((a, r) => a + r.max, 0) });
     }
     hbars($("wUse"), rows.map(b => ({
-      label: `<span class="with-icon">${b.other ? `<span class="icon sm"></span>` : icon(b.name, "icon sm")}<span>${esc(b.name)}<br><span class="muted sub">${b.n} building${b.n === 1 ? "" : "s"}</span></span></span>`,
+      label: `<span class="with-icon">${b.other ? `<span class="icon sm"></span>` : icon(b.name, "icon sm")}<span>${esc(b.name)}<br><span class="muted sub">${b.players?.size ? [...b.players].map(esc).join(", ") : `${b.n} building${b.n === 1 ? "" : "s"}`}</span></span></span>`,
       value: b.cur, cap: b.max, text: `<b>${fmtNum(b.cur, b.cur < 10 ? 1 : 0)}</b> <span class="muted">/ ${fmtNum(b.max, b.max < 10 ? 1 : 0)} MW</span>`,
       title: `${b.name}: ${fmtNum(b.cur, 1)} MW now, ${fmtNum(b.max, 1)} MW if all ran at once`,
     })), { color: "var(--s2)", capColor: "var(--track)" });
