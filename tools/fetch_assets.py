@@ -1,6 +1,6 @@
 """Fetch the assets the tracker needs but that aren't checked in (game art isn't ours to redistribute):
 
-  - map-tiles/  map tile pyramid, downloaded from satisfactoryinteractivemap.com
+  - map-tiles/terrain/ and map-tiles/game/  map tile pyramids, downloaded from satisfactoryinteractivemap.com
   - img/*.png  vehicle pictures, downloaded from the Satisfactory wiki (satisfactory.wiki.gg)
   - img/icons/<name>.png  item and building icons for the Production and Power tabs (also from the wiki)
 
@@ -24,7 +24,8 @@ import urllib.request
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 UA = {"User-Agent": "FicsitRemoteMonitoringFrontEnd/1.0 (asset fetch)"}
 WIKI_API = "https://satisfactory.wiki.gg/api.php"
-MAP_TILE_URL = "https://satisfactoryinteractivemap.com/tiles/game"
+MAP_TILE_URL = "https://satisfactoryinteractivemap.com/tiles"
+MAP_TEXTURES = ("terrain", "game")
 MAP_ZOOMS = range(1, 6)
 DOWNLOAD_ATTEMPTS = 5
 DOWNLOAD_WORKERS = 4
@@ -102,13 +103,13 @@ def read_url(req, label, validate=None):
         time.sleep(delay)
 
 
-def download_map_tile(z, x, y):
-    url = f"{MAP_TILE_URL}/{z}/{y}/{x}.webp"
-    out = ROOT / "map-tiles" / str(z) / str(y) / f"{x}.webp"
+def download_map_tile(texture, z, x, y):
+    url = f"{MAP_TILE_URL}/{texture}/{z}/{y}/{x}.webp"
+    out = ROOT / "map-tiles" / texture / str(z) / str(y) / f"{x}.webp"
     if valid_map_tile(out):
         return
     req = urllib.request.Request(url, headers=UA)
-    data = read_url(req, f"map tile {z}/{y}/{x}", valid_webp)
+    data = read_url(req, f"{texture} map tile {z}/{y}/{x}", valid_webp)
     out.parent.mkdir(parents=True, exist_ok=True)
     temp = out.with_name(out.name + ".tmp")
     temp.write_bytes(data)
@@ -116,21 +117,22 @@ def download_map_tile(z, x, y):
 
 
 def fetch_map_tiles():
-    tiles = [(z, x, y) for z in MAP_ZOOMS for y in range(2 ** z) for x in range(2 ** z)]
+    tiles = [(texture, z, x, y) for texture in MAP_TEXTURES for z in MAP_ZOOMS
+             for y in range(2 ** z) for x in range(2 ** z)]
     missing, cached = [], 0
-    for z, x, y in tiles:
-        path = ROOT / "map-tiles" / str(z) / str(y) / f"{x}.webp"
+    for texture, z, x, y in tiles:
+        path = ROOT / "map-tiles" / texture / str(z) / str(y) / f"{x}.webp"
         if valid_map_tile(path):
             cached += 1
         else:
-            missing.append((z, x, y))
+            missing.append((texture, z, x, y))
     if not missing:
         print(f"map tiles: {cached}/{len(tiles)} already downloaded")
         return
     if cached:
         print(f"map tiles: resuming with {cached}/{len(tiles)} already downloaded")
     with concurrent.futures.ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
-        jobs = [pool.submit(download_map_tile, z, x, y) for z, x, y in missing]
+        jobs = [pool.submit(download_map_tile, texture, z, x, y) for texture, z, x, y in missing]
         for done, job in enumerate(concurrent.futures.as_completed(jobs), 1):
             job.result()
             if done % 100 == 0:
@@ -207,9 +209,11 @@ def fetch_icons():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Fetch the tracker's map tiles, vehicle pictures and item/building icons")
+    ap.add_argument("--skip-map", action="store_true", help="skip downloading terrain and game map tiles")
     ap.add_argument("--skip-images", action="store_true", help="skip vehicle pictures and item/building icons")
     args = ap.parse_args()
-    fetch_map_tiles()
+    if not args.skip_map:
+        fetch_map_tiles()
     if not args.skip_images:
         fetch_images()
         fetch_icons()

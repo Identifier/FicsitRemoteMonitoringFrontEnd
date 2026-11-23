@@ -1169,8 +1169,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_body(200, json.dumps(data, separators=(",", ":")).encode())
         if path == "/update/status":
             return self.send_body(200, json.dumps(updater.status(self.is_local())).encode())
+        tile = re.fullmatch(r"/map-tiles/([A-Za-z0-9._~-]+)/([1-5])/([0-9]{1,2})/([0-9]{1,2})\.webp", path)
+        if tile:
+            texture, zoom, row, column = tile.groups()
+            z, y, x = map(int, (zoom, row, column))
+            if texture in (".", "..") or x >= 2 ** z or y >= 2 ** z:
+                return self.send_error(404)
+            try:
+                (ROOT / path.lstrip("/")).stat()
+            except FileNotFoundError:
+                self.send_response(302)
+                self.send_header("Location", f"https://satisfactoryinteractivemap.com/tiles/{texture}/{z}/{y}/{x}.webp")
+                self.end_headers()
+                return
+            return super().do_GET()
         if (path in ("/", "/index.html", "/items.json") or re.fullmatch(r"/js/[a-z0-9-]+\.js", path)
-                or re.fullmatch(r"/map-tiles/[1-5]/\d{1,2}/\d{1,2}\.webp", path)
                 or re.fullmatch(r"/img/(icons/)?[a-z0-9-]+\.png", path)):
             return super().do_GET()
         self.send_error(404)
@@ -1245,8 +1258,6 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.frm:
         FRM = args.frm.rstrip("/")
-    if not (ROOT / "map-tiles" / "1" / "0" / "0.webp").exists():
-        print("note: map tiles missing - run `python tools/fetch_assets.py` to download the map background")
     last_load()
     threading.Thread(target=last_saver, daemon=True).start()
     threading.Thread(target=last_snapshot, daemon=True).start()
