@@ -39,6 +39,7 @@ import urllib.parse
 import urllib.request
 
 import updater
+from tools import map_tiles
 
 ROOT = pathlib.Path(__file__).parent
 ALLOWED = {"getFactoryCart", "getVehicles", "getTruckStation", "getVehiclePaths", "getTrains", "getTrainStation",
@@ -1169,17 +1170,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_body(200, json.dumps(data, separators=(",", ":")).encode())
         if path == "/update/status":
             return self.send_body(200, json.dumps(updater.status(self.is_local())).encode())
-        tile = re.fullmatch(r"/map-tiles/([A-Za-z0-9._~-]+)/([1-5])/([0-9]{1,2})/([0-9]{1,2})\.webp", path)
+        tile = re.fullmatch(r"/map-tiles/([A-Za-z0-9._~-]+)/([1-6])/([0-9]{1,2})/([0-9]{1,2})\.webp", path)
         if tile:
             texture, zoom, row, column = tile.groups()
             z, y, x = map(int, (zoom, row, column))
-            if texture in (".", "..") or x >= 2 ** z or y >= 2 ** z:
+            url = map_tiles.tile_url(texture, z, x, y)
+            if url is None:
                 return self.send_error(404)
             try:
                 (ROOT / path.lstrip("/")).stat()
             except FileNotFoundError:
                 self.send_response(302)
-                self.send_header("Location", f"https://satisfactoryinteractivemap.com/tiles/{texture}/{z}/{y}/{x}.webp")
+                self.send_header("Location", url)
                 self.end_headers()
                 return
             return super().do_GET()

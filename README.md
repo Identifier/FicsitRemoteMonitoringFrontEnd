@@ -29,11 +29,11 @@ Pick one:
 Both can update themselves later from the page (see [Updating](#updating)).
 
 ### 4. Fetch the map and pictures (once)
-The vehicle pictures and icons are Coffee Stain's game art, and the map background is from Satisfactory Interactive Map, so they aren't included. Open a terminal in the monitor's folder (in Explorer: right-click the folder → **Open in Terminal**) and run:
+The vehicle pictures, icons and map backgrounds aren't included because they're other people's game art. Open a terminal in the monitor's folder (in Explorer: right-click the folder → **Open in Terminal**) and run:
 ```sh
 python tools/fetch_assets.py
 ```
-This downloads the map tiles from [Satisfactory Interactive Map](https://satisfactoryinteractivemap.com/) and the pictures and icons from the [Satisfactory wiki](https://satisfactory.wiki.gg), so this step needs internet.
+This downloads map tiles from [Satisfactory Interactive Map](https://satisfactoryinteractivemap.com/) and [Satisfactory Calculator](https://satisfactory-calculator.com/), and pictures and icons from the [Satisfactory wiki](https://satisfactory.wiki.gg), so this step needs internet. Missing map tiles are instead loaded from their source by the browser at runtime.
 
 ### 5. Run it
 ```sh
@@ -68,6 +68,8 @@ To start it with Windows, make a shortcut in the Startup folder (Win+R → `shel
 - Only published releases count; drafts, pre-releases and commits pushed without a release are never offered.
 
 ## Maps
+
+Choose a shared background on any map: **Game** (the default) and **Realistic** from Satisfactory Calculator, or **Contoured** and **Terrain** from Satisfactory Interactive Map. The choice is saved in your browser.
 
 On a desktop every tab's map sits in the same place on the right, at the same size, and changing tabs keeps the same spot and zoom, so the map doesn't move or flash when you switch. The **Players** button beside Whole map centres on a player; click again for the next one (online players first, then A–Z; right-click goes back).
 

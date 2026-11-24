@@ -1,11 +1,12 @@
-// The world map used by every tab: the in-game map image, pan/zoom, toggleable layers, hover tooltips,
+// The world map used by every tab: map backgrounds, pan/zoom, toggleable layers, hover tooltips,
 // "locate" (fly to a point and pulse it) and the X/Y cursor readout. Point layers are drawn here; a tab can draw
 // anything else (vehicle paths, rails, moving markers) through the draw() hook. Uses the page's WORLD/IMG/worldToImg.
 "use strict";
 
 const MAP_TILE_URL = "/map-tiles";
 const MAP_TILE_CACHE = new Map();
-const MAP_TEXTURES = [{ v: "game", label: "Game map" }, { v: "terrain", label: "Terrain" }];
+const MAP_TEXTURES = [{ v: "calculator-game", label: "Game" }, { v: "interactive-game", label: "Contoured" },
+                      { v: "interactive-terrain", label: "Terrain" }, { v: "calculator-realistic", label: "Realistic" }];
 
 function mapTile(texture, z, x, y) {
   const url = `${MAP_TILE_URL}/${texture}/${z}/${y}/${x}.webp`;
@@ -682,8 +683,8 @@ const MAP_TABS = ["overview", "vehicles", "production", "power", "belts", "pipes
 class MapView {
   static all = []; static pending = null; static last = null;
   static texture = (() => {
-    try { const saved = localStorage.getItem("ft.mapTexture"); return MAP_TEXTURES.some(t => t.v === saved) ? saved : "terrain"; }
-    catch { return "terrain"; }
+    try { const saved = localStorage.getItem("ft.mapTexture"); return MAP_TEXTURES.some(t => t.v === saved) ? saved : "calculator-game"; }
+    catch { return "calculator-game"; }
   })();
   static setTexture(texture) {
     if (!MAP_TEXTURES.some(t => t.v === texture) || texture === MapView.texture) return;
@@ -1184,17 +1185,27 @@ class MapView {
     const sw = Math.min(IMG - sx, r.width / v.s - Math.max(0, v.ox / v.s)), sh = Math.min(IMG - sy, r.height / v.s - Math.max(0, v.oy / v.s));
     if (sw > 0 && sh > 0) {
       ctx.imageSmoothingEnabled = v.s < 1;
-      const z = Math.max(1, Math.min(5, Math.round(Math.log2(32 * v.s))));
-      const count = 2 ** z, tileUnits = IMG / count;
-      const x0 = Math.floor(sx / tileUnits), y0 = Math.floor(sy / tileUnits);
-      const x1 = Math.min(count - 1, Math.floor((sx + sw) / tileUnits));
-      const y1 = Math.min(count - 1, Math.floor((sy + sh) / tileUnits));
+      const calculator = MapView.texture === "calculator-game" || MapView.texture === "calculator-realistic";
+      const level = Math.max(1, Math.min(5, Math.round(Math.log2(32 * v.s))));
+      const z = calculator ? Math.max(3, level + 1) : level;
+      const count = 2 ** (calculator ? z - 1 : z), tileUnits = IMG / count;
+      // Calculator tiles include padding around the same world bounds, and its west bound differs slightly.
+      const calcWest = -324698.832031, calcWidth = 425301.832031 - calcWest;
+      const xTileUnits = calculator ? tileUnits * calcWidth / (WORLD.x1 - WORLD.x0) : tileUnits;
+      const xOffset = calculator ? count / 8 + (WORLD.x0 - calcWest) / calcWidth * count : 0;
+      const yOffset = calculator ? count / 8 : 0;
+      const x0 = Math.floor(sx / xTileUnits + xOffset), y0 = Math.floor(sy / tileUnits + yOffset);
+      const x1 = Math.ceil((sx + sw) / xTileUnits + xOffset) - 1;
+      const y1 = Math.ceil((sy + sh) / tileUnits + yOffset) - 1;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(v.ox, v.oy, IMG * v.s, IMG * v.s); ctx.clip();
       for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
         const image = mapTile(MapView.texture, z, x, y);
         if (image.complete && image.naturalWidth) {
-          ctx.drawImage(image, v.ox + x * tileUnits * v.s, v.oy + y * tileUnits * v.s, tileUnits * v.s, tileUnits * v.s);
+          ctx.drawImage(image, v.ox + (x - xOffset) * xTileUnits * v.s, v.oy + (y - yOffset) * tileUnits * v.s, xTileUnits * v.s, tileUnits * v.s);
         }
       }
+      ctx.restore();
     }
     ctx.fillStyle = `rgba(10,12,16,${this.opts.dim ?? 0.45})`; ctx.fillRect(0, 0, r.width, r.height);
     const under = () => {   // lines and the tab's own drawing, under the markers

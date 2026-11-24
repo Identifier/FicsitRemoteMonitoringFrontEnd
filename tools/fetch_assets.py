@@ -1,6 +1,6 @@
 """Fetch the assets the tracker needs but that aren't checked in (game art isn't ours to redistribute):
 
-  - map-tiles/terrain/ and map-tiles/game/  map tile pyramids, downloaded from satisfactoryinteractivemap.com
+  - map-tiles/  map tile pyramids from Satisfactory Interactive Map and Satisfactory Calculator
   - img/*.png  vehicle pictures, downloaded from the Satisfactory wiki (satisfactory.wiki.gg)
   - img/icons/<name>.png  item and building icons for the Production and Power tabs (also from the wiki)
 
@@ -21,12 +21,11 @@ import time
 import urllib.parse
 import urllib.request
 
+import map_tiles
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 UA = {"User-Agent": "FicsitRemoteMonitoringFrontEnd/1.0 (asset fetch)"}
 WIKI_API = "https://satisfactory.wiki.gg/api.php"
-MAP_TILE_URL = "https://satisfactoryinteractivemap.com/tiles"
-MAP_TEXTURES = ("terrain", "game")
-MAP_ZOOMS = range(1, 6)
 DOWNLOAD_ATTEMPTS = 5
 DOWNLOAD_WORKERS = 4
 RETRYABLE_HTTP = {408, 425, 429, 500, 502, 503, 504}
@@ -104,7 +103,9 @@ def read_url(req, label, validate=None):
 
 
 def download_map_tile(texture, z, x, y):
-    url = f"{MAP_TILE_URL}/{texture}/{z}/{y}/{x}.webp"
+    url = map_tiles.tile_url(texture, z, x, y)
+    if url is None:
+        raise ValueError(f"Invalid map tile: {texture}/{z}/{y}/{x}")
     out = ROOT / "map-tiles" / texture / str(z) / str(y) / f"{x}.webp"
     if valid_map_tile(out):
         return
@@ -117,8 +118,8 @@ def download_map_tile(texture, z, x, y):
 
 
 def fetch_map_tiles():
-    tiles = [(texture, z, x, y) for texture in MAP_TEXTURES for z in MAP_ZOOMS
-             for y in range(2 ** z) for x in range(2 ** z)]
+    tiles = [(texture, z, x, y) for texture in map_tiles.TEXTURES for z in range(1, 7)
+             for y in map_tiles.tile_range(texture, z) for x in map_tiles.tile_range(texture, z, x_axis=True)]
     missing, cached = [], 0
     for texture, z, x, y in tiles:
         path = ROOT / "map-tiles" / texture / str(z) / str(y) / f"{x}.webp"
@@ -209,7 +210,7 @@ def fetch_icons():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Fetch the tracker's map tiles, vehicle pictures and item/building icons")
-    ap.add_argument("--skip-map", action="store_true", help="skip downloading terrain and game map tiles")
+    ap.add_argument("--skip-map", action="store_true", help="skip downloading map tiles")
     ap.add_argument("--skip-images", action="store_true", help="skip vehicle pictures and item/building icons")
     args = ap.parse_args()
     if not args.skip_map:
