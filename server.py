@@ -434,11 +434,42 @@ class History:
         return [rows[int(i * step):int((i + 1) * step)] for i in range(max_points)], step
 
     def power_json(self, mins):
+        now = time.time()
+        cut = now - mins * 60 - POWER_EVERY_S * 4
         with self.lock:
-            rows, step = self.window(self.power, mins)
+            raw = [s for s in self.power if s[0] >= cut]
+            rows, step = self.window(raw, mins)
+        coverage = {"all": [], "groups": {}}
+        def extend(spans, t, connected=True):
+            if connected and spans and t - spans[-1][1] <= POWER_EVERY_S * 3.5:
+                spans[-1][1] = t
+            else:
+                spans.append([t, t])
+        previous = {}
+        for t, row in raw:
+            if row:
+                extend(coverage["all"], t, bool(previous))
+            for k in row:
+                extend(coverage["groups"].setdefault(k, []), t, k in previous)
+            previous = row
+        for spans in [coverage["all"], *coverage["groups"].values()]:
+            for span in spans:
+                span[0] -= POWER_EVERY_S / 2
+                span[1] += POWER_EVERY_S / 2
+            # A recent last sample is still current while the next poll is pending.
+            if spans and now - spans[-1][1] <= POWER_EVERY_S * 3.5:
+                spans[-1][1] = max(spans[-1][1], now + POWER_EVERY_S)
         if step != 1:   # average each bucket; fuse = tripped at any point in it
             merged = []
-            for b in rows:
+            buckets = []
+            for bucket in rows:
+                buckets.append([])
+                for sample in bucket:
+                    if (buckets[-1] and (sample[0] - buckets[-1][-1][0] > POWER_EVERY_S * 3.5
+                                         or sample[1].keys() != buckets[-1][-1][1].keys())):
+                        buckets.append([])
+                    buckets[-1].append(sample)
+            for b in buckets:
                 keys = set().union(*(s[1].keys() for s in b))
                 row = {}
                 for k in keys:
@@ -455,7 +486,8 @@ class History:
                                           ("prod", "cons", "cap", "max", "batt", "battIn", "battOut", "fuse", "battCap")})
                 for f, x in zip(g, v):
                     g[f][i] = x
-        return {"session": self.session, "interval": POWER_EVERY_S * step, "t": [r[0] for r in rows], "groups": groups}
+        return {"session": self.session, "interval": POWER_EVERY_S * step, "t": [r[0] for r in rows], "groups": groups,
+                "coverage": coverage}
 
     def prod_json(self, mins):
         with self.lock:

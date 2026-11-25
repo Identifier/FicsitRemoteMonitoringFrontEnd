@@ -397,14 +397,16 @@ const Power = (() => {
       for (const id of ids) { const x = hist.groups[id], v = x?.batt?.[i], c = x?.battCap?.[i] ?? capOf(id);
         if (v != null && c) { any = true; sum += v / 100 * c; } }
       return any ? sum : null; });
+    const tMax = Date.now() / 1000, tMin = tMax - ui.range * 60;
+    const coverage = hist.coverage ? (g.all ? hist.coverage.all : hist.coverage.groups[String(g.CircuitGroupID)] || []) : undefined;
     const s = (key, name, color, extra) => ({ key, name, color, values: h ? h[key] : [], ...extra });
-    chart.update(h ? { t: hist.t, interval: hist.interval, series: [
+    chart.update({ t: hist.t, tMin, tMax, coverage, interval: hist.interval, series: [
       s("cap", "Capacity", "var(--s3)"), s("prod", "Production", "var(--s1)"),
       s("cons", "Consumption", "var(--s2)", { area: true }), s("max", "Max consumption", "var(--s4)", { dash: true }),
-    ] } : null);
+    ] });
     $("wBatt").style.display = g.BatteryCapacity > 0 ? "" : "none";
-    if (g.BatteryCapacity > 0) battChart.update(h ? { t: hist.t, interval: hist.interval, yMax: g.BatteryCapacity,
-      series: [{ key: "stored", name: `Stored charge (of ${fmtNum(g.BatteryCapacity)} MWh)`, color: "var(--s3)", values: stored, area: true }] } : null);
+    if (g.BatteryCapacity > 0) battChart.update({ t: hist.t, tMin, tMax, coverage, interval: hist.interval, yMax: g.BatteryCapacity,
+      series: [{ key: "stored", name: `Stored charge (of ${fmtNum(g.BatteryCapacity)} MWh)`, color: "var(--s3)", values: stored, area: true }] });
   }
 
   // FRM's battery times are "HH:MM:SS" ("00:00:00" when not filling / draining)
