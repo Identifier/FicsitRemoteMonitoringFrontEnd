@@ -77,6 +77,7 @@
   .cargo-pop { position: fixed; z-index: 30; min-width: 180px; max-width: 360px; padding: 6px 4px; border-radius: 8px;
                background: var(--panel-2); border: 1px solid var(--line); box-shadow: 0 10px 30px #000a;
                pointer-events: none; display: none; font-size: 13px; }
+  .cargo-pop.grid-pop { pointer-events: auto; overflow: auto; max-height: min(70vh, 600px); }
   .cargo-pop .row { display: flex; justify-content: space-between; gap: 16px; padding: 3px 9px; }
   .cargo-pop .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
   .cargo-pop .head { padding: 2px 9px 6px; margin-bottom: 3px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
@@ -732,6 +733,8 @@ const PATH_COLOR = { vehicle: "rgba(240,244,250,.85)", cart: "#d8b48a" };
 // ---- state ----------------------------------------------------------------
 let vehicles = [];
 let truckStations = [], trainStations = [], dronePorts = [], paths = [], rails = [];
+const stationStatus = { truck: "loading", train: "loading", drone: "loading" };
+const stationListeners = new Set();
 const motion = new Map();   // id -> {fx,fy,tx,ty,frot,trot,t0}  (image px, canvas angle deg)
 const history = new Map();  // id -> recent world positions [{t,x,y,z}]
 let hoverId = null, followId = null;
@@ -1306,7 +1309,10 @@ async function poll() {
   try {
     const [wheeled, trains, drones, ports] = await Promise.all([getJSON("getVehicles"), getJSON("getTrains").catch(() => []),
       getJSON("getDrone").catch(() => []), getJSON("getDroneStation").catch(() => null)]);
-    if (ports) dronePorts = fixNames(ports);
+    if (ports) {
+      dronePorts = fixNames(ports); stationStatus.drone = "ready";
+      for (const listener of stationListeners) listener();
+    }
     const next = wheeled.map(fromWheeled).concat(trains.map(fromTrain), drones.map(fromDrone));
     const now = performance.now();
     for (const v of next) {
@@ -1396,12 +1402,15 @@ function stationWhy(kind, s) {
 }
 async function pollStatic() {
   const [ts, rs, ds, ps, rl] = await Promise.allSettled([getJSON("getTruckStation"), getJSON("getTrainStation"), getJSON("getDroneStation"), getJSON("getVehiclePaths"), getJSON("getTrainRails")]);
+  for (const [kind, result] of [["truck", ts], ["train", rs], ["drone", ds]])
+    stationStatus[kind] = result.status === "fulfilled" ? "ready" : "unavailable";
   if (ts.status === "fulfilled") truckStations = fixNames(ts.value);
   if (rs.status === "fulfilled") trainStations = fixNames(rs.value);
   if (ds.status === "fulfilled") dronePorts = fixNames(ds.value);
   if (ps.status === "fulfilled") paths = ps.value.map(p => ({ cart: /FactoryCart/i.test(p.ClassName), pts: p.PathPoints || [] }));
   if (rl.status === "fulfilled") { rails = rl.value.map(r => ({ pts: r.SplineData?.length ? r.SplineData : [r.location0, r.location1].filter(Boolean) })); railNet = buildRailNet(rl.value); }
   renderLayerButtons();
+  for (const listener of stationListeners) listener();
 }
 
 // drones fly straight between paired ports: one line per pair
@@ -1853,13 +1862,16 @@ every(poll, POLL_MS, () => activeTab === "vehicles");
 // paths, rails and stations: for the Vehicles and Overview maps, or any map with one of those layers switched on
 const showsNetwork = () => activeTab === "vehicles" || activeTab === "overview" ||
   MapView.all.some(mv => mv.tab === activeTab && NET_KEYS().some(k => mv.isOn(k)));
-every(pollStatic, 60000, showsNetwork);
+every(pollStatic, 60000, () => activeTab === "power" || showsNetwork());
 // station contents change constantly; refresh them faster than paths/rails
 every(async () => {
   const [ts, rs] = await Promise.allSettled([getJSON("getTruckStation"), getJSON("getTrainStation")]);
+  for (const [kind, result] of [["truck", ts], ["train", rs]])
+    stationStatus[kind] = result.status === "fulfilled" ? "ready" : "unavailable";
   if (ts.status === "fulfilled") truckStations = fixNames(ts.value);
   if (rs.status === "fulfilled") trainStations = fixNames(rs.value);
-}, 3000, showsNetwork);
+  for (const listener of stationListeners) listener();
+}, 3000, () => activeTab === "power" || showsNetwork());
 </script>
 <script src="/js/production.js"></script>
 <script src="/js/power.js"></script>

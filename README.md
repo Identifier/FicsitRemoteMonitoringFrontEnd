@@ -99,6 +99,7 @@ Every tab's map shares the same parts: a Layers dropdown with **everything** —
 ### Power
 ![Power](docs/screenshots/power.png)
 - **All grids** together or one grid at a time. Grids are named after what powers them, biggest share first, with used / max: "Nuclear 200/2,000 MW", "Coal 1", "Coal 2"; grids with no generators come last.
+- Hover or focus a grid selector for its present and maximum power, stations, named switches and configured production outputs, sorted by AWESOME Sink points per item (unknown values last). Each list shows up to three entries and a count of the remainder.
 - The in-game power graph's numbers (capacity, production, consumption, max consumption) plus headroom, batteries and fuse state.
 - **Power & batteries**: the power graph with a stored-charge graph (MWh) under it on the same time axis, beside a battery readout like the in-game Power Storage panel: charge gauge and %, time until full (or empty while draining), stored charge (e.g. 3,300 / 3,300 MWh) and charge rate.
 - The power charts show the full selected time window. Hatched regions have no recorded data; hover to see an explanation. The history does not record whether the monitor was stopped, FRM was unavailable, or the grid did not yet exist. Closing the browser does not stop recording while the monitor server runs.
