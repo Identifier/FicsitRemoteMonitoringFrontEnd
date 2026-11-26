@@ -341,6 +341,7 @@ const PowerNet = {
     this.grids = ok(w) || this.grids || []; this.loaded = true;
     this.groupOf = new Map((ok(w) || []).flatMap(gr => (gr.AssociatedCircuits || []).map(c => [c, gr.CircuitGroupID])));
     this.poles = poles.map(x => ({ ...x, kind: /Tower/i.test(x.ClassName) ? "towers" : /Wall/i.test(x.ClassName) ? "outlets" : "poles", circuits: [x.CircuitID] }));
+    this.switchStatus = s.status === "fulfilled" ? "ready" : "unavailable";
     this.switches = (ok(s) || []).map(x => ({ ...x, circuits: [x.Primary, x.Secondary] }));
     this.storage = usage.filter(x => /PowerStorage/.test(x.ClassName || x.ID)).map(x => ({ ...x, circuits: [x.PowerInfo?.CircuitID] }));
     // everything with a circuit and a place: what a line's end can attach to

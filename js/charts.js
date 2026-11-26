@@ -91,12 +91,18 @@ const fmtNum = (v, digits = 0) => v == null || isNaN(v) ? "–" : v.toLocaleStri
 // adaptive precision for rates: 1,234 · 56.7 · 0.25
 const fmtRate = v => v == null || isNaN(v) ? "–" : Math.abs(v) >= 100 ? fmtNum(v, 0) : Math.abs(v) >= 10 ? fmtNum(v, 1) : fmtNum(v, 2);
 const fmtTime = (t, withDate) => new Date(t * 1000).toLocaleTimeString([], withDate ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
+function coverageIndex(spans, t) {
+  let lo = 0, hi = spans.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (spans[mid][0] <= t) lo = mid + 1; else hi = mid; }
+  return lo && t <= spans[lo - 1][1] ? lo - 1 : -1;
+}
 
 /**
  * Line chart over time. One instance per container; call .update(data) with new data.
- * data = { t: [unix s], interval: s, series: [{ key, name, color, values: [..], dash?, area? }], unit, yMax? }
+ * data = { t: [unix s], interval: s, series: [{ key, name, color, values: [..], dash?, area? }], unit, yMax?, tMin?, tMax?, coverage? }
  * Gaps: null values, or a time jump > 3 intervals, break the line.
  */
+let chartPatternId = 0;
 class LineChart {
   // fill: take the height of the panel it sits in (one-screen layouts) instead of a fixed height
   constructor(el, { height = 230, unit = "", fmt = fmtRate, empty = "No history yet — the server records it while it runs.", fill = false } = {}) {
@@ -106,10 +112,10 @@ class LineChart {
     this.box = document.createElement("div"); this.box.className = "lc-box"; el.appendChild(this.box);
     this.svg = svgEl("svg", { height, role: "img" }, this.box);
     this.tip = document.createElement("div"); this.tip.className = "lc-tip"; this.box.appendChild(this.tip);
-    this.data = null; this.hoverI = null;
+    this.data = null; this.hoverI = null; this.hoverTime = null;
     new ResizeObserver(() => this.render()).observe(this.box);
     this.svg.addEventListener("pointermove", e => this.hover(e));
-    this.svg.addEventListener("pointerleave", () => { this.hoverI = null; this.tip.style.display = "none"; this.drawCursor(); });
+    this.svg.addEventListener("pointerleave", () => { this.hoverI = null; this.hoverTime = null; this.tip.style.display = "none"; this.drawCursor(); });
   }
   update(data) { this.data = data; this.render(); }
   render() {
@@ -125,7 +131,7 @@ class LineChart {
       span.append(key, document.createTextNode(s.name)); return span;
     }));
     const n = d ? d.t.length : 0;
-    if (n < 2) {
+    if (n < 2 && !d?.coverage) {
       svgEl("text", { x: W / 2, y: this.height / 2, "text-anchor": "middle", class: "lc-empty" }, svg).textContent = this.emptyText;
       return;
     }
@@ -136,10 +142,27 @@ class LineChart {
     const ticks = niceTicks(d.yMax && max <= d.yMax ? d.yMax : max * 1.05, nTicks), yTop = ticks[ticks.length - 1];
     // left margin fits the widest tick label
     const pad = { l: 12 + Math.max(...ticks.map(v => this.fmtTick(v).length)) * 7, r: 14, t: 10, b: 24 };
-    const t0 = d.t[0], t1 = d.t[n - 1], span = Math.max(1, t1 - t0);
+    const t0 = d.tMin ?? d.t[0], t1 = d.tMax ?? d.t[n - 1], span = Math.max(1, t1 - t0);
     const x = t => pad.l + (t - t0) / span * (W - pad.l - pad.r);
     const y = v => this.height - pad.b - v / yTop * (this.height - pad.t - pad.b);
-    Object.assign(this, { x, y, pad, W });
+    Object.assign(this, { x, y, pad, W, t0, t1 });
+    this.missing = [];
+    if (d.coverage) {
+      let end = t0;
+      for (const [a, b] of d.coverage) {
+        if (b < t0 || a > t1) continue;
+        if (a > end) this.missing.push([end, Math.min(a, t1)]);
+        end = Math.max(end, b);
+      }
+      if (end < t1) this.missing.push([end, t1]);
+      if (this.missing.length) {
+        const id = `lc-missing-${++chartPatternId}`, defs = svgEl("defs", {}, svg);
+        const pattern = svgEl("pattern", { id, width: 12, height: 12, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, defs);
+        svgEl("line", { x1: 0, y1: 0, x2: 0, y2: 12, stroke: "#9ca3af", "stroke-opacity": 0.3, "stroke-width": 2 }, pattern);
+        for (const [a, b] of this.missing)
+          svgEl("rect", { x: x(a), y: pad.t, width: x(b) - x(a), height: this.height - pad.t - pad.b, fill: `url(#${id})` }, svg);
+      }
+    }
     const grid = svgEl("g", { class: "lc-grid" }, svg);
     for (const v of ticks) {
       svgEl("line", { x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v), class: v === 0 ? "base" : "" }, grid);
@@ -158,7 +181,9 @@ class LineChart {
         seg = [];
       };
       s.values.forEach((v, i) => {
-        if (v == null || (i && d.t[i] - d.t[i - 1] > gapS)) flush();
+        if (v == null || (i && (d.t[i] - d.t[i - 1] > gapS ||
+            (d.coverage && (coverageIndex(d.coverage, d.t[i]) < 0 ||
+              coverageIndex(d.coverage, d.t[i]) !== coverageIndex(d.coverage, d.t[i - 1])))))) flush();
         if (v == null) return;
         const p = [x(d.t[i]).toFixed(1), y(v).toFixed(1)];
         path += (seg.length ? "L" : "M") + p[0] + "," + p[1]; seg.push(p);
@@ -168,13 +193,32 @@ class LineChart {
       svgEl("path", { d: path, fill: "none", stroke: cssColor(s.color), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
                       ...(s.dash ? { "stroke-dasharray": "5 4" } : {}) }, svg);
     }
+    if (n < 2) svgEl("text", { x: W / 2, y: this.height / 2, "text-anchor": "middle", class: "lc-empty" }, svg).textContent = this.emptyText;
     this.cursor = svgEl("g", {}, svg);
     this.drawCursor();
   }
   fmtTick(v) { return v >= 10000 ? fmtNum(v / 1000, 1) + "k" : fmtNum(v, v < 10 ? 2 : 0); }
   hover(e) {
-    const d = this.data; if (!d || d.t.length < 2 || !this.x) return;
+    const d = this.data; if (!d || (!d.coverage && d.t.length < 2) || !this.x) return;
     const r = this.svg.getBoundingClientRect(), mx = e.clientX - r.left;
+    if (d.coverage && (mx < this.pad.l || mx > this.W - this.pad.r)) { this.hoverI = null; this.hoverTime = null; this.tip.style.display = "none"; this.drawCursor(); return; }
+    const time = this.t0 + (mx - this.pad.l) / (this.W - this.pad.l - this.pad.r) * (this.t1 - this.t0);
+    if (d.coverage && coverageIndex(d.coverage, time) < 0) {
+      this.hoverI = null; this.hoverTime = time; this.drawCursor();
+      this.tip.classList.add("lc-gap-tip");
+      this.tip.replaceChildren();
+      const head = document.createElement("div"); head.className = "lc-tip-head";
+      head.textContent = new Date(time * 1000).toLocaleString();
+      const note = document.createElement("div");
+      note.textContent = "No power history was recorded for this time or grid. The cause is unknown; the monitor may have stopped or FRM may have been unavailable. Closing the browser alone does not stop recording.";
+      this.tip.append(head, note); this.tip.style.display = "block";
+      const tw = this.tip.offsetWidth;
+      this.tip.style.left = (mx + 14 + tw > this.W ? Math.max(0, mx - tw - 14) : mx + 14) + "px";
+      return;
+    }
+    if (!d.t.length) return;
+    this.hoverTime = null;
+    this.tip.classList.remove("lc-gap-tip");
     let best = 0, bd = Infinity;
     d.t.forEach((t, i) => { const dd = Math.abs(this.x(t) - mx); if (dd < bd) { bd = dd; best = i; } });
     this.hoverI = best; this.drawCursor();
@@ -196,9 +240,10 @@ class LineChart {
     if (!this.cursor) return;
     this.cursor.replaceChildren();
     const d = this.data, i = this.hoverI;
-    if (i == null || !d) return;
-    const px = this.x(d.t[i]);
+    if (!d || (this.hoverTime == null && (i == null || i >= d.t.length))) return;
+    const px = this.x(this.hoverTime ?? d.t[i]);
     svgEl("line", { x1: px, x2: px, y1: this.pad.t, y2: this.height - this.pad.b, class: "lc-cross" }, this.cursor);
+    if (this.hoverTime != null) return;
     for (const s of d.series) if (s.values[i] != null)
       svgEl("circle", { cx: px, cy: this.y(s.values[i]), r: 4, fill: cssColor(s.color), class: "lc-dot" }, this.cursor);
   }

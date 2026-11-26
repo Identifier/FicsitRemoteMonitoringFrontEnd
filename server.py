@@ -211,6 +211,102 @@ def frm_json(endpoint, max_age=None, live=False):
     return json.loads(body)
 
 
+def hoverpack_active(player):
+    """Some FRM builds report active equipment; otherwise infer use from the grid's unexplained draw."""
+    if not player.get("Online"):
+        return False
+    for key, value in player.items():
+        kl = str(key).lower()
+        if "hoverpack" in kl and ("active" in kl or "equipped" in kl or "inuse" in kl or "using" in kl):
+            return bool(value)
+    for key in ("Equipment", "EquipmentSlots", "HandEquipment"):
+        value = player.get(key)
+        items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = ((item.get("Name") or "") + " " + (item.get("ClassName") or "")).lower()
+            if "hoverpack" not in text:
+                continue
+            if any(bool(item.get(k)) for k in ("Active", "InUse", "IsActive", "Equipped", "IsEquipped", "Enabled")):
+                return True
+    return False
+
+
+def add_hoverpack_usage(usage):
+    """Add one 100 MW usage row per online player matching an explicit Hoverpack or grid draw."""
+    if not isinstance(usage, list):
+        return usage
+    existing_players = set()
+    for row in usage:
+        if not isinstance(row, dict) or "hoverpack" not in ((row.get("Name") or "") + " " + (row.get("ClassName") or "")).lower():
+            continue
+        player_id = row.get("PlayerID")
+        row_id = row.get("ID")
+        if player_id is None and isinstance(row_id, str) and row_id.startswith("Hoverpack_"):
+            player_id = row_id[len("Hoverpack_"):]
+        if player_id is not None:
+            existing_players.add(str(player_id))
+    try:
+        players = frm_json("getPlayer", 4)
+        grids = frm_json("getPower", 4)
+    except (OSError, ValueError, TypeError):
+        return usage
+    try:
+        poles = frm_json("getPowerPoles", 4)
+    except (OSError, ValueError, TypeError):
+        poles = []
+    if not isinstance(players, list) or not isinstance(grids, list):
+        return usage
+
+    poles = poles if isinstance(poles, list) else []
+    poles = [p for p in poles if isinstance(p, dict) and all(
+        isinstance((p.get("location") or {}).get(k), (int, float)) for k in ("x", "y", "z"))]
+    players_on_circuits = []
+    for player in players:
+        if (not isinstance(player, dict) or not player.get("Online")
+                or str(player.get("ID")) in existing_players):
+            continue
+        loc = player.get("location") or {}
+        if not all(isinstance(loc.get(k), (int, float)) for k in ("x", "y", "z")) or not poles:
+            continue
+        pole = min(poles, key=lambda p: sum(
+            (loc[k] - p["location"][k]) ** 2 for k in ("x", "y", "z")))
+        circuit = pole.get("CircuitID")
+        if isinstance(circuit, int):
+            players_on_circuits.append((player, loc, circuit))
+
+    deficits = {}
+    for grid in grids:
+        group = grid.get("CircuitGroupID")
+        accounted = sum((u.get("PowerInfo") or {}).get("PowerConsumed") or 0
+                        for u in usage if isinstance(u, dict)
+                        and (u.get("PowerInfo") or {}).get("CircuitGroupID") == group)
+        deficits[group] = max(0, (grid.get("PowerConsumed") or 0) - accounted)
+
+    result = list(usage)
+    for player, loc, circuit in players_on_circuits:
+        grid = next((g for g in grids if circuit in (g.get("AssociatedCircuits") or [])), None)
+        if grid is None:
+            continue
+        group = grid.get("CircuitGroupID")
+        deficit = deficits[group]
+        if not hoverpack_active(player) and deficit < 95:
+            continue
+        result.append({
+            "ID": f"Hoverpack_{player.get('ID')}",
+            "Name": "Hoverpack",
+            "ClassName": "BP_EquipmentDescriptorHoverPack_C",
+            "PlayerName": player.get("Name"),
+            "PlayerID": player.get("ID"),
+            "location": loc,
+            "PowerInfo": {"CircuitGroupID": group, "CircuitID": circuit, "FuseTriggered": False,
+                          "PowerConsumed": 100, "MaxPowerConsumed": 100},
+        })
+        deficits[group] = max(0, deficit - 100)
+    return result
+
+
 # ---- history ---------------------------------------------------------------------------------
 def load_items():
     try:
@@ -436,11 +532,42 @@ class History:
         return [rows[int(i * step):int((i + 1) * step)] for i in range(max_points)], step
 
     def power_json(self, mins):
+        now = time.time()
+        cut = now - mins * 60 - POWER_EVERY_S * 4
         with self.lock:
-            rows, step = self.window(self.power, mins)
+            raw = [s for s in self.power if s[0] >= cut]
+            rows, step = self.window(raw, mins)
+        coverage = {"all": [], "groups": {}}
+        def extend(spans, t, connected=True):
+            if connected and spans and t - spans[-1][1] <= POWER_EVERY_S * 3.5:
+                spans[-1][1] = t
+            else:
+                spans.append([t, t])
+        previous = {}
+        for t, row in raw:
+            if row:
+                extend(coverage["all"], t, bool(previous))
+            for k in row:
+                extend(coverage["groups"].setdefault(k, []), t, k in previous)
+            previous = row
+        for spans in [coverage["all"], *coverage["groups"].values()]:
+            for span in spans:
+                span[0] -= POWER_EVERY_S / 2
+                span[1] += POWER_EVERY_S / 2
+            # A recent last sample is still current while the next poll is pending.
+            if spans and now - spans[-1][1] <= POWER_EVERY_S * 3.5:
+                spans[-1][1] = max(spans[-1][1], now + POWER_EVERY_S)
         if step != 1:   # average each bucket; fuse = tripped at any point in it
             merged = []
-            for b in rows:
+            buckets = []
+            for bucket in rows:
+                buckets.append([])
+                for sample in bucket:
+                    if (buckets[-1] and (sample[0] - buckets[-1][-1][0] > POWER_EVERY_S * 3.5
+                                         or sample[1].keys() != buckets[-1][-1][1].keys())):
+                        buckets.append([])
+                    buckets[-1].append(sample)
+            for b in buckets:
                 keys = set().union(*(s[1].keys() for s in b))
                 row = {}
                 for k in keys:
@@ -457,7 +584,8 @@ class History:
                                           ("prod", "cons", "cap", "max", "batt", "battIn", "battOut", "fuse", "battCap")})
                 for f, x in zip(g, v):
                     g[f][i] = x
-        return {"session": self.session, "interval": POWER_EVERY_S * step, "t": [r[0] for r in rows], "groups": groups}
+        return {"session": self.session, "interval": POWER_EVERY_S * step, "t": [r[0] for r in rows], "groups": groups,
+                "coverage": coverage}
 
     def prod_json(self, mins):
         with self.lock:
@@ -1238,6 +1366,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except (KeyError, ValueError):
             max_age = None
         status, body, stale = frm(endpoint, max_age)
+        if endpoint == "getPowerUsage" and status == 200:
+            try:
+                usage = add_hoverpack_usage(json.loads(body))
+                body = json.dumps(usage, separators=(",", ":")).encode()
+            except (ValueError, TypeError):
+                pass
         # X-Stale: FRM isn't answering and this is what it last said (unix time); X-Down-Since: when it stopped
         self.send_body(status, body, {"X-Stale": f"{stale:.0f}", "X-Down-Since": f"{_net['down_since'] or stale:.0f}"} if stale else None)
 

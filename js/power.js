@@ -14,10 +14,12 @@ const Power = (() => {
     running: { label: "Running", color: "var(--ok)", title: "Producing power" },
     idle:    { label: "Idle", color: "var(--muted)", title: "Fuelled, but nothing on the grid needs its power" },
   };
-  let groups = [], gens = [], usage = [], hist = null, timer = null, detailTimer = null, histTimer = null, netTimer = null, loaded = false;
+  let groups = [], gens = [], usage = [], machines = null, sinkValues = null, sinkStatus = "loading", hist = null;
+  let timer = null, detailTimer = null, histTimer = null, sinkTimer = null, loaded = false;
   const ui = (() => { try { return { range: 60, grid: "all", gq: "", ...JSON.parse(localStorage.getItem("pw.ui2") || "{}") }; } catch { return { range: 60, grid: "all", gq: "" }; } })();
   const saveUi = () => { try { localStorage.setItem("pw.ui2", JSON.stringify(ui)); } catch {} };
   let chart, battChart, unitTable, map, selGen = null, selSw = null, sideShown = null;
+  let hideGridTip = () => {}, refreshGridTip = () => {};
   const root = $("tab-power");
   const mw = v => `${v < 0 ? "−" : ""}${fmtNum(Math.abs(v), Math.abs(v) < 100 ? 1 : 0)} <small>MW</small>`;
 
@@ -131,10 +133,19 @@ const Power = (() => {
   }
   async function pollDetail() {
     const [g, u, p] = await Promise.allSettled([getJSON("getGenerators"), getJSON("getPowerUsage"), Production.snapshot(20)]);
-    if (p.status === "fulfilled") fuelScale = p.value.items.fuelScale || new Map();
+    if (p.status === "fulfilled") { fuelScale = p.value.items.fuelScale || new Map(); machines = p.value.machines; }
+    else machines = null;
     if (g.status === "fulfilled") { fuelOf = Production.fuelPicker(g.value); gens = g.value.map(fromGen); }
     if (u.status === "fulfilled") usage = u.value;
-    sortGroups(); render();
+    sortGroups(); render(); refreshGridTip();
+  }
+  async function pollSinkValues() {
+    try {
+      const list = await getJSON("getSinkList", 300);
+      sinkValues = new Map(list.map(x => [x.Name, x.Points]));
+      sinkStatus = "ready";
+    } catch (e) { sinkValues = null; sinkStatus = "unavailable"; }
+    refreshGridTip();
   }
 
   // ---- power switches: what's on each side --------------------------------------------------
@@ -233,7 +244,7 @@ const Power = (() => {
       (g && pi.MaxPowerConsumed > 0 && pi.PowerConsumed === 0 && !g.PowerProduction && !g.PowerCapacity));
   };
   const usePop = u => { const pi = u.PowerInfo || {}, off = noPower(pi), on = pi.PowerConsumed > 0.11;
-    return Pop.head(u.Name, { id: shortId(u.ID), sub: "uses power", status: off ? "No power" : on ? "Drawing power" : "Idle",
+    return Pop.head(u.Name, { id: shortId(u.ID), sub: u.PlayerName ? esc(u.PlayerName) : "uses power", status: off ? "No power" : on ? "Drawing power" : "Idle",
                               color: off ? "var(--bad)" : on ? POWER_COLOR : "var(--muted)" }) + Pop.powerWhy(pi) +
       Pop.sec("Power") + Pop.row("Drawing", Pop.mw(pi.PowerConsumed || 0, pi.MaxPowerConsumed)) + Pop.grid(pi.CircuitID) + Pop.where(u.location); };
 
@@ -285,9 +296,40 @@ const Power = (() => {
   function renderGrids() {
     $("wGridGroup").style.display = groups.length > 1 ? "" : "none";   // one grid: nothing to choose
     const all = allGrids();
-    setSeg($("wGrids"), segControl("grid", [{ v: "all", label: `All grids <span class="n">(${mwPair(all)})</span>`, title: "present consumption / present capacity" },
-      ...groups.map(g => ({ v: String(g.CircuitGroupID), label: `${g.FuseTriggered ? "⚠ " : ""}${esc(gridName(g))}`,
-        title: "present consumption / present capacity" }))], o => o.v === String(grid().CircuitGroupID)));
+    setSeg($("wGrids"), segControl("grid", [{ v: "all", label: `All grids <span class="n">(${mwPair(all)})</span>` },
+      ...groups.map(g => ({ v: String(g.CircuitGroupID), label: `${g.FuseTriggered ? "⚠ " : ""}${esc(gridName(g))}` }))],
+      o => o.v === String(grid().CircuitGroupID)));
+    for (const b of $("wGrids").querySelectorAll("button")) b.setAttribute("aria-describedby", "wGridTip");
+  }
+
+  function gridPop(g) {
+    const list = (entries, render) => entries.slice(0, 3).map(render).join("") +
+      (entries.length > 3 ? Pop.note(`${fmtNum(entries.length - 3)} more...`) : "");
+    const section = (title, entries, status = "ready") => status === "ready" && !entries.length ? "" : Pop.sec(title) +
+      (status !== "ready" ? Pop.note(status === "loading" ? "Loading…" : "Unavailable") :
+        list(entries, e => Pop.note(icon(e.type, "icon sm") + esc(e.name), "")));
+    const stations = (list, type) => list.filter(s => s.Name && s.Name !== "None" && onGrid(s.PowerInfo, g))
+      .map(s => ({ name: s.Name, type })).sort((a, b) => a.name.localeCompare(b.name));
+    const switches = PowerNet.switches.filter(s => (s.circuits || []).some(c => c >= 0 && (g.AssociatedCircuits || []).includes(c)))
+      .map(s => ({ name: s.SwitchTag || s.Name, type: s.Priority >= 0 ? "Priority Power Switch" : "Power Switch" }))
+      .filter(s => s.name && s.name !== "None" && !["Power Switch", "Priority Power Switch"].includes(s.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const names = new Set();
+    if (machines) for (const m of machines) if (onGrid({ CircuitID: m.circuitId, CircuitGroupID: m.circuit }, g))
+      for (const o of m.outputs) if (o.name && o.name !== "N/A") names.add(o.name);
+    const items = [...names].sort((a, b) => (sinkValues?.get(b) ?? -1) - (sinkValues?.get(a) ?? -1) || a.localeCompare(b));
+    const itemList = !machines ? Pop.sec("Produced items") + Pop.note("Unavailable") : !items.length ? "" :
+      Pop.sec("Produced items") +
+      (sinkStatus !== "ready" ? Pop.note(sinkStatus === "loading" ? "Item ranking loading…" : "Item ranking unavailable; showing alphabetical order") : "") +
+      list(items, n => Pop.note(icon(n, "icon sm") + esc(n), ""));
+    const cap = capOf(g), max = maxOf(g);
+    return Pop.head(gridLabel(g)) +
+      Pop.row("Presently:", `${fmtNum(g.PowerConsumed)}/${fmtNum(cap)} MW`, g.PowerConsumed > cap ? "warn-text" : "") +
+      Pop.row("Maximum:", `${fmtNum(g.PowerMaxConsumed)}/${fmtNum(max)} MW`, g.PowerMaxConsumed > max ? "warn-text" : "") +
+      section("Truck stations", stations(truckStations, "Truck Station"), stationStatus.truck) +
+      section("Train stations", stations(trainStations, "Train Station"), stationStatus.train) +
+      section("Drone ports", stations(dronePorts, "Drone Port"), stationStatus.drone) +
+      section("Power switches", switches, PowerNet.switchStatus || "loading") + itemList;
   }
 
   // ---- grid layout: start at the circuit with the generators and follow the switches outward
@@ -358,8 +400,10 @@ const Power = (() => {
     const byB = new Map();
     for (const u of usage) {
       if (!onGrid(u.PowerInfo, g) || !(u.PowerInfo.MaxPowerConsumed > 0)) continue;
-      const b = byB.get(u.Name) || { name: u.Name, n: 0, cur: 0, max: 0 };
-      b.n++; b.cur += u.PowerInfo.PowerConsumed || 0; b.max += u.PowerInfo.MaxPowerConsumed || 0; byB.set(u.Name, b);
+      const b = byB.get(u.Name) || { name: u.Name, n: 0, cur: 0, max: 0, players: new Set() };
+      b.n++; b.cur += u.PowerInfo.PowerConsumed || 0; b.max += u.PowerInfo.MaxPowerConsumed || 0;
+      if (u.PlayerName) b.players.add(u.PlayerName);
+      byB.set(u.Name, b);
     }
     let rows = [...byB.values()].sort((a, b) => b.cur - a.cur || b.max - a.max);
     if (rows.length > 11) {
@@ -368,7 +412,7 @@ const Power = (() => {
         cur: rest.reduce((a, r) => a + r.cur, 0), max: rest.reduce((a, r) => a + r.max, 0) });
     }
     hbars($("wUse"), rows.map(b => ({
-      label: `<span class="with-icon">${b.other ? `<span class="icon sm"></span>` : icon(b.name, "icon sm")}<span>${esc(b.name)}<br><span class="muted sub">${b.n} building${b.n === 1 ? "" : "s"}</span></span></span>`,
+      label: `<span class="with-icon">${b.other ? `<span class="icon sm"></span>` : icon(b.name, "icon sm")}<span>${esc(b.name)}<br><span class="muted sub">${b.players?.size ? [...b.players].map(esc).join(", ") : `${b.n} building${b.n === 1 ? "" : "s"}`}</span></span></span>`,
       value: b.cur, cap: b.max, text: `<b>${fmtNum(b.cur, b.cur < 10 ? 1 : 0)}</b> <span class="muted">/ ${fmtNum(b.max, b.max < 10 ? 1 : 0)} MW</span>`,
       title: `${b.name}: ${fmtNum(b.cur, 1)} MW now, ${fmtNum(b.max, 1)} MW if all ran at once`,
     })), { color: "var(--s2)", capColor: "var(--track)" });
@@ -405,14 +449,16 @@ const Power = (() => {
       for (const id of ids) { const x = hist.groups[id], v = x?.batt?.[i], c = x?.battCap?.[i] ?? capOf(id);
         if (v != null && c) { any = true; sum += v / 100 * c; } }
       return any ? sum : null; });
+    const tMax = Date.now() / 1000, tMin = tMax - ui.range * 60;
+    const coverage = hist.coverage ? (g.all ? hist.coverage.all : hist.coverage.groups[String(g.CircuitGroupID)] || []) : undefined;
     const s = (key, name, color, extra) => ({ key, name, color, values: h ? h[key] : [], ...extra });
-    chart.update(h ? { t: hist.t, interval: hist.interval, series: [
+    chart.update({ t: hist.t, tMin, tMax, coverage, interval: hist.interval, series: [
       s("cap", "Capacity", "var(--s3)"), s("prod", "Production", "var(--s1)"),
       s("cons", "Consumption", "var(--s2)", { area: true }), s("max", "Max consumption", "var(--s4)", { dash: true }),
-    ] } : null);
+    ] });
     $("wBatt").style.display = g.BatteryCapacity > 0 ? "" : "none";
-    if (g.BatteryCapacity > 0) battChart.update(h ? { t: hist.t, interval: hist.interval, yMax: g.BatteryCapacity,
-      series: [{ key: "stored", name: `Stored charge (of ${fmtNum(g.BatteryCapacity)} MWh)`, color: "var(--s3)", values: stored, area: true }] } : null);
+    if (g.BatteryCapacity > 0) battChart.update({ t: hist.t, tMin, tMax, coverage, interval: hist.interval, yMax: g.BatteryCapacity,
+      series: [{ key: "stored", name: `Stored charge (of ${fmtNum(g.BatteryCapacity)} MWh)`, color: "var(--s3)", values: stored, area: true }] });
   }
 
   // FRM's battery times are "HH:MM:SS" ("00:00:00" when not filling / draining)
@@ -494,6 +540,36 @@ const Power = (() => {
         </div>
       </div></div>
       <section class="card map-panel w-map"><div id="wMap"></div></section>`;
+    const gridTip = document.createElement("div");
+    gridTip.className = "cargo-pop grid-pop"; gridTip.id = "wGridTip"; gridTip.setAttribute("role", "tooltip"); document.body.appendChild(gridTip);
+    let hideGridTipTimer = null, tipButton = null, tipHtml = "";
+    hideGridTip = () => { clearTimeout(hideGridTipTimer); hideGridTipTimer = null; gridTip.style.display = "none"; tipButton = null; };
+    const deferHideGridTip = () => { clearTimeout(hideGridTipTimer); hideGridTipTimer = setTimeout(hideGridTip, 150); };
+    const showGridTip = b => {
+      clearTimeout(hideGridTipTimer); hideGridTipTimer = null;
+      const g = b.dataset.v === "all" ? allGrids() : groups.find(x => String(x.CircuitGroupID) === b.dataset.v);
+      if (!g) return hideGridTip();
+      tipButton = b;
+      const html = gridPop(g), scroll = gridTip.scrollTop;
+      if (tipHtml !== html) { gridTip.innerHTML = tipHtml = html; gridTip.scrollTop = scroll; }
+      gridTip.style.display = "block"; gridTip.style.maxHeight = "";
+      const r = b.getBoundingClientRect(), below = innerHeight - r.bottom - 12, above = r.top - 12;
+      const up = gridTip.offsetHeight > below && above > below;
+      gridTip.style.maxHeight = Math.max(40, up ? above : below) + "px";
+      const h = gridTip.offsetHeight;
+      gridTip.style.left = Math.max(8, Math.min(r.left, innerWidth - gridTip.offsetWidth - 8)) + "px";
+      gridTip.style.top = (up ? Math.max(8, r.top - h - 4) : r.bottom + 4) + "px";
+    };
+    refreshGridTip = () => { if (tipButton && !hideGridTipTimer) tipButton.isConnected ? showGridTip(tipButton) : hideGridTip(); };
+    stationListeners.add(refreshGridTip);
+    const gridsEl = $("wGrids");
+    gridsEl.addEventListener("pointerover", e => { const b = e.target.closest('button[data-g="grid"]'); if (b && !b.contains(e.relatedTarget)) showGridTip(b); });
+    gridsEl.addEventListener("pointerleave", deferHideGridTip);
+    gridsEl.addEventListener("focusin", e => { const b = e.target.closest('button[data-g="grid"]'); if (b) showGridTip(b); });
+    gridsEl.addEventListener("focusout", deferHideGridTip);
+    gridTip.addEventListener("pointerenter", () => { clearTimeout(hideGridTipTimer); hideGridTipTimer = null; });
+    gridTip.addEventListener("pointerleave", deferHideGridTip);
+    root.addEventListener("keydown", e => { if (e.key === "Escape") hideGridTip(); });
     chart = new LineChart($("wChart"), { height: 260, unit: "MW", fill: true });
     battChart = new LineChart($("wBatt"), { height: 96, unit: "MWh", fmt: v => fmtNum(v, v < 100 ? 1 : 0), fill: true });
     const pillFor = r => { const st = unitStatus(r); return `<span class="pill" style="color:${st.color};background:color-mix(in srgb, ${st.color} 14%, transparent)" title="${st.title}">${st.label}</span>`; };
@@ -574,7 +650,7 @@ const Power = (() => {
         selGen = tr.dataset.gid; selSw = null; showSides(null); tr.classList.add("sel"); map.locate(selGen);
       }
     });
-    PowerNet.listeners.add(() => { if (loaded && groups.length) { renderLayout(grid()); renderUnits(grid()); } });
+    PowerNet.listeners.add(() => { if (loaded && groups.length) { renderLayout(grid()); renderUnits(grid()); refreshGridTip(); } });
 
     root.addEventListener("click", e => {
       const j = e.target.closest("[data-jump]");
@@ -600,12 +676,13 @@ const Power = (() => {
     show() {
       if (!chart) init();
       PowerNet.need();   // the switch and pole tables use the shared power network
-      poll(); pollDetail(); pollHistory();
+      poll(); pollDetail(); pollHistory(); pollSinkValues();
       timer = timer || every(poll, POLL_MS);
       detailTimer = detailTimer || every(pollDetail, DETAIL_MS);
       histTimer = histTimer || every(pollHistory, 5000);
+      sinkTimer = sinkTimer || every(pollSinkValues, 300000);
     },
-    hide() { [timer, detailTimer, histTimer, netTimer].forEach(stopPoll); timer = detailTimer = histTimer = netTimer = null; },
+    hide() { hideGridTip(); [timer, detailTimer, histTimer, sinkTimer].forEach(stopPoll); timer = detailTimer = histTimer = sinkTimer = null; },
     gridLabel,
     selectGrid,
   };
