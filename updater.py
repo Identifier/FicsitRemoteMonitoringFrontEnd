@@ -6,7 +6,7 @@ Only published releases count (not drafts or pre-releases); commits pushed to ma
 - A copy downloaded as a zip downloads the release zip and copies its files over this folder. VERSION says which commit
   it is (GitHub fills it in when it builds the zip: .gitattributes export-subst). .update-files lists the files the last
   update wrote, so the next one can remove files a release dropped.
-Files the repo doesn't ship (history.json, laststate.json.gz, map.avif, img/) are never touched.
+Files the repo doesn't ship (history.json, laststate.json.gz, map-tiles/, img/) are never touched.
 
 After updating, the server saves its state, starts the new version and exits. If the new version doesn't answer within
 RESTART_WAIT_S, the update is undone and the old server carries on.

@@ -22,7 +22,7 @@ History is saved to history.json next to this file, so it survives a restart.
 When FRM stops answering (game server down, restarting, a session loading), every /api call gets the last answer FRM
 gave instead, marked with an X-Stale header (when it's from); the page then says it's showing the last known state.
 Those answers are saved to laststate.json.gz, so this works after a restart of this server too.
-Run tools/fetch_assets.py once first to get the map image, vehicle pictures and icons.
+Run tools/fetch_assets.py once first to get the map tiles, vehicle pictures and icons.
 """
 import argparse
 import gzip
@@ -39,6 +39,7 @@ import urllib.parse
 import urllib.request
 
 import updater
+from tools import map_tiles
 
 ROOT = pathlib.Path(__file__).parent
 ALLOWED = {"getFactoryCart", "getVehicles", "getTruckStation", "getVehiclePaths", "getTrains", "getTrainStation",
@@ -1180,7 +1181,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_body(200, json.dumps(data, separators=(",", ":")).encode())
         if path == "/update/status":
             return self.send_body(200, json.dumps(updater.status(self.is_local())).encode())
-        if (path in ("/", "/index.html", "/items.json", "/map.avif") or re.fullmatch(r"/js/[a-z0-9-]+\.js", path)
+        tile = re.fullmatch(r"/map-tiles/([A-Za-z0-9._~-]+)/([1-6])/([0-9]{1,2})/([0-9]{1,2})\.webp", path)
+        if tile:
+            texture, zoom, row, column = tile.groups()
+            z, y, x = map(int, (zoom, row, column))
+            url = map_tiles.tile_url(texture, z, x, y)
+            if url is None:
+                return self.send_error(404)
+            try:
+                (ROOT / path.lstrip("/")).stat()
+            except FileNotFoundError:
+                self.send_response(302)
+                self.send_header("Location", url)
+                self.end_headers()
+                return
+            return super().do_GET()
+        if (path in ("/", "/index.html", "/items.json") or re.fullmatch(r"/js/[a-z0-9-]+\.js", path)
                 or re.fullmatch(r"/img/(icons/)?[a-z0-9-]+\.png", path)):
             return super().do_GET()
         self.send_error(404)
@@ -1247,7 +1263,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         if getattr(self, "_status", 200) >= 400:   # never let the browser cache an error (e.g. an icon fetched later)
             self.send_header("Cache-Control", "no-store")
-        elif self.path.startswith(("/map.avif", "/img/")):
+        elif self.path.startswith(("/img/", "/map-tiles/")):
             self.send_header("Cache-Control", "max-age=86400")
         elif not self.path.startswith(("/api/", "/hist/")):   # page, scripts, items.json: always revalidate so edits show up
             self.send_header("Cache-Control", "no-cache")
@@ -1269,8 +1285,6 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.frm:
         FRM = args.frm.rstrip("/")
-    if not (ROOT / "map.avif").exists():
-        print("note: map.avif missing - run `python tools/fetch_assets.py --game-dir <Satisfactory install>` for the map background")
     last_load()
     threading.Thread(target=last_saver, daemon=True).start()
     threading.Thread(target=last_snapshot, daemon=True).start()

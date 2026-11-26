@@ -319,7 +319,8 @@ def test_git_up_to_date(w):
 
 def test_git_update_flow(w):
     c = w.git_copy("git-main")
-    (c / "map.avif").write_bytes(b"game art")    # files the repo doesn't ship
+    (c / "map-tiles" / "1" / "0").mkdir(parents=True)
+    (c / "map-tiles" / "1" / "0" / "0.webp").write_bytes(b"map tile")
     (c / "img").mkdir(exist_ok=True)
     (c / "img" / "x.png").write_bytes(b"icon")
     (c / "history.json").write_text('{"session": null, "power": [], "prod": [], "sink": []}')
@@ -363,7 +364,8 @@ def test_git_update_flow(w):
     assert (c / "release.txt").read_text().strip() == "v1.1" and (c / "js" / "added.js").exists()
     assert git(c, "rev-parse", "HEAD") == git(w.up, "rev-parse", "v1.1^{commit}")
     assert git(c, "symbolic-ref", "--short", "HEAD") == "main"
-    assert (c / "map.avif").read_bytes() == b"game art" and (c / "img" / "x.png").read_bytes() == b"icon"
+    assert (c / "img" / "x.png").read_bytes() == b"icon"
+    assert (c / "map-tiles" / "1" / "0" / "0.webp").read_bytes() == b"map tile"
     assert (c / "scratch.txt").read_text() == "mine"
     assert (c / "laststate.json.gz").exists(), "state wasn't saved before the restart"
     s.proc.wait(10)   # the old server exited
@@ -444,13 +446,14 @@ def test_git_broken_release_rolls_back(w):
 def test_zip_auto_update(w):
     c = w.zip_copy("zip-auto", "v1.0")
     assert (c / "VERSION").read_text().strip() == git(w.up, "rev-parse", "v1.0^{commit}"), "export-subst didn't fill VERSION"
-    (c / "map.avif").write_bytes(b"game art")
+    (c / "map-tiles" / "1" / "0").mkdir(parents=True)
+    (c / "map-tiles" / "1" / "0" / "0.webp").write_bytes(b"map tile")
     (c / "history.json").write_text('{"session": null, "power": [], "prod": [], "sink": []}')
     s = w.serve(c, "--auto-update", first_check=1)
     st = wait_updated(s, s.status()["boot"], "v1.1")    # nobody clicked anything
     assert st["mode"] == "zip" and st["auto"] and not st["available"], st
     assert (c / "release.txt").read_text().strip() == "v1.1" and (c / "js" / "added.js").exists()
-    assert (c / "map.avif").read_bytes() == b"game art"
+    assert (c / "map-tiles" / "1" / "0" / "0.webp").read_bytes() == b"map tile"
     assert (c / ".update-files").exists() and (c / "docs" / "old-note.txt").exists()
     assert "auto-updating" in s.output()
 

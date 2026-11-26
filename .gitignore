@@ -1,6 +1,6 @@
 # Game art fetched locally by tools/fetch_assets.py - not redistributed
-map.avif
 img/
+map-tiles/
 
 __pycache__/
 *.pyc

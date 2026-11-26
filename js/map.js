@@ -1,7 +1,27 @@
-// The world map used by every tab: the in-game map image, pan/zoom, toggleable layers, hover tooltips,
+// The world map used by every tab: map backgrounds, pan/zoom, toggleable layers, hover tooltips,
 // "locate" (fly to a point and pulse it) and the X/Y cursor readout. Point layers are drawn here; a tab can draw
-// anything else (vehicle paths, rails, moving markers) through the draw() hook. Uses the page's WORLD/IMG/worldToImg/mapImg.
+// anything else (vehicle paths, rails, moving markers) through the draw() hook. Uses the page's WORLD/IMG/worldToImg.
 "use strict";
+
+const MAP_TILE_URL = "/map-tiles";
+const MAP_TILE_CACHE = new Map();
+const MAP_TEXTURES = [{ v: "calculator-game", label: "Game" }, { v: "interactive-game", label: "Contoured" },
+                      { v: "interactive-terrain", label: "Terrain" }, { v: "calculator-realistic", label: "Realistic" }];
+
+function mapTile(texture, z, x, y) {
+  const url = `${MAP_TILE_URL}/${texture}/${z}/${y}/${x}.webp`;
+  let image = MAP_TILE_CACHE.get(url);
+  if (!image) {
+    image = new Image();
+    image.onload = () => { for (const map of MapView.all) map.draw(); };
+    image.onerror = () => console.error(`Could not load map tile: ${url}`);
+    image.src = url;
+  }
+  MAP_TILE_CACHE.delete(url);
+  MAP_TILE_CACHE.set(url, image);
+  if (MAP_TILE_CACHE.size > 256) MAP_TILE_CACHE.delete(MAP_TILE_CACHE.keys().next().value);
+  return image;
+}
 
 // ---- hover popups: one look on every map -----------------------------------------------------------
 // A title (name + short ID), a sub line with a coloured status pill, then labelled rows in sections. Every marker's
@@ -662,6 +682,16 @@ const MAP_TABS = ["overview", "vehicles", "production", "power", "belts", "pipes
 
 class MapView {
   static all = []; static pending = null; static last = null;
+  static texture = (() => {
+    try { const saved = localStorage.getItem("ft.mapTexture"); return MAP_TEXTURES.some(t => t.v === saved) ? saved : "calculator-game"; }
+    catch { return "calculator-game"; }
+  })();
+  static setTexture(texture) {
+    if (!MAP_TEXTURES.some(t => t.v === texture) || texture === MapView.texture) return;
+    MapView.texture = texture;
+    try { localStorage.setItem("ft.mapTexture", texture); } catch {}
+    for (const m of MapView.all) { m.renderTexture(); m.draw(); }
+  }
   // the legend is on or off for every map at once (Legend button, saved)
   static legendOn = (() => { try { return localStorage.getItem("ft.legend") !== "0"; } catch { return true; } })();
   static toggleLegend() {
@@ -702,7 +732,7 @@ class MapView {
     for (const l of this.layers) { l.def = l.on ?? true; l.on = saved[l.key] ?? l.def; }   // def: this tab's starting state (the menu's Default button)
     this.dragging = false; this.mouseWorld = null;
     el.classList.add("mapview");
-    el.innerHTML = `<div class="mv-head"><div class="btns"></div><div class="btns right"><button class="b" data-act="fit">${esc(opts.fitLabel || "Fit")}</button><button class="b" data-act="world">Whole map</button><button class="b mv-pl" data-act="player" disabled></button><button class="b mv-lgb" data-act="legend" title="Show / hide the legend (all maps)">Legend</button></div></div>
+    el.innerHTML = `<div class="mv-head"><div class="btns"></div><button class="b mv-lgb" data-act="legend" title="Show / hide the legend (all maps)">Legend</button><div class="btns right"><button class="b" data-act="fit">${esc(opts.fitLabel || "Fit")}</button><button class="b" data-act="world">Whole map</button><button class="b mv-pl" data-act="player" disabled></button><div class="mv-texture"></div></div></div>
       <div class="mv-box"><canvas></canvas><div class="mv-top"><div class="mv-note" hidden></div><div class="mv-lg" hidden></div></div></div>`;
     this.btns = el.querySelector(".mv-head .btns");
     this.plBtn = el.querySelector(".mv-pl");
@@ -712,6 +742,7 @@ class MapView {
     el.querySelector("canvas").addEventListener("mouseleave", () => this.markLegend(null));
     this.plBtn.addEventListener("contextmenu", e => { e.preventDefault(); this.nextPlayer(-1); });   // right-click: previous player
     this.playerButton();
+    this.textureEl = el.querySelector(".mv-texture"); this.renderTexture();
     this.canvas = el.querySelector("canvas"); this.ctx = this.canvas.getContext("2d");
     this.view = { s: 0.1, ox: 0, oy: 0 };
     el.querySelector(".mv-head").addEventListener("click", e => {
@@ -722,6 +753,7 @@ class MapView {
       else if (b.dataset.act === "legend") { MapView.toggleLegend(); return; }
       else if (b.dataset.act === "layers") { this.menu.classList.contains("open") ? this.closeMenu() : this.openMenu(b); return; }
       else if (b.dataset.layer) this.setLayers({ [b.dataset.layer]: !this.isOn(b.dataset.layer) });
+      else if (b.dataset.g === "map-texture") { e.stopPropagation(); MapView.setTexture(b.dataset.v); return; }
       this.draw();
     });
     // layerMenu: the layers are checkboxes in a dropdown instead of a row of toggle buttons (same .popover look as filters)
@@ -793,7 +825,6 @@ class MapView {
     this.canvas.addEventListener("mouseleave", () => {
       if (this.hoverNet) { this.hoverNet = null; opts.onNetHover && opts.onNetHover(null); }
       this.mouseWorld = null; this.draw(); if (this.hoverId) { this.hoverId = null; opts.onHover && opts.onHover(null); this.draw(); } hideCargoPop(); });
-    mapImg.addEventListener("load", () => this.draw());
     this.renderButtons();
     for (const src of SOURCES) src.attach(this);
     if (opts.animate) {   // repaint while something moves (capped at ~30 fps), never while the map isn't on screen
@@ -968,6 +999,10 @@ class MapView {
       i++;
     }
     el.style.gridTemplateRows = `repeat(${Math.min(i, rows)}, auto)`;
+  }
+  renderTexture() {
+    setSeg(this.textureEl, segControl("map-texture", MAP_TEXTURES, o => o.v === MapView.texture));
+    this.textureEl.querySelector(".seg").setAttribute("aria-label", "Map texture");
   }
   renderButtons() {
     this.renderLegend();
@@ -1146,14 +1181,33 @@ class MapView {
     const ctx = this.ctx, r = this.canvas.getBoundingClientRect(), v = this.view;
     if (!r.width) return;
     ctx.clearRect(0, 0, r.width, r.height);
-    if (mapImg.complete && mapImg.naturalWidth) {
+    const sx = Math.max(0, -v.ox / v.s), sy = Math.max(0, -v.oy / v.s);
+    const sw = Math.min(IMG - sx, r.width / v.s - Math.max(0, v.ox / v.s)), sh = Math.min(IMG - sy, r.height / v.s - Math.max(0, v.oy / v.s));
+    if (sw > 0 && sh > 0) {
       ctx.imageSmoothingEnabled = v.s < 1;
-      // only the part of the map image that's on screen: drawing all 8192 px scaled up fails (blank) when zoomed in
-      const sx = Math.max(0, -v.ox / v.s), sy = Math.max(0, -v.oy / v.s);
-      const sw = Math.min(IMG - sx, r.width / v.s - Math.max(0, v.ox / v.s)), sh = Math.min(IMG - sy, r.height / v.s - Math.max(0, v.oy / v.s));
-      if (sw > 0 && sh > 0) ctx.drawImage(mapImg, sx, sy, sw, sh, v.ox + sx * v.s, v.oy + sy * v.s, sw * v.s, sh * v.s);
-      ctx.fillStyle = `rgba(10,12,16,${this.opts.dim ?? 0.45})`; ctx.fillRect(0, 0, r.width, r.height);
+      const calculator = MapView.texture === "calculator-game" || MapView.texture === "calculator-realistic";
+      const level = Math.max(1, Math.min(5, Math.round(Math.log2(32 * v.s))));
+      const z = calculator ? Math.max(3, level + 1) : level;
+      const count = 2 ** (calculator ? z - 1 : z), tileUnits = IMG / count;
+      // Calculator tiles include padding around the same world bounds, and its west bound differs slightly.
+      const calcWest = -324698.832031, calcWidth = 425301.832031 - calcWest;
+      const xTileUnits = calculator ? tileUnits * calcWidth / (WORLD.x1 - WORLD.x0) : tileUnits;
+      const xOffset = calculator ? count / 8 + (WORLD.x0 - calcWest) / calcWidth * count : 0;
+      const yOffset = calculator ? count / 8 : 0;
+      const x0 = Math.floor(sx / xTileUnits + xOffset), y0 = Math.floor(sy / tileUnits + yOffset);
+      const x1 = Math.ceil((sx + sw) / xTileUnits + xOffset) - 1;
+      const y1 = Math.ceil((sy + sh) / tileUnits + yOffset) - 1;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(v.ox, v.oy, IMG * v.s, IMG * v.s); ctx.clip();
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const image = mapTile(MapView.texture, z, x, y);
+        if (image.complete && image.naturalWidth) {
+          ctx.drawImage(image, v.ox + (x - xOffset) * xTileUnits * v.s, v.oy + (y - yOffset) * tileUnits * v.s, xTileUnits * v.s, tileUnits * v.s);
+        }
+      }
+      ctx.restore();
     }
+    ctx.fillStyle = `rgba(10,12,16,${this.opts.dim ?? 0.45})`; ctx.fillRect(0, 0, r.width, r.height);
     const under = () => {   // lines and the tab's own drawing, under the markers
       if (this.opts.powerNet) { ctx.save(); drawPowerLines(this, this.opts.powerNet); ctx.restore(); }
       if (this.opts.logistics) { ctx.save(); drawLogistics(this, this.opts.logistics, this.opts.highlight?.(), this.hoverNet); ctx.restore(); }   // under everything else
